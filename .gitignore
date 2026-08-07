@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local database and snapshots — rooted, so src/data/ (shipped seed data) still ships
+/data/
+/backups/
+
+# local editor and agent tooling
+.claude/

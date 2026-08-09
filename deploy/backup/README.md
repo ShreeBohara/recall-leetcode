@@ -69,6 +69,36 @@ it keeps the damaged original around for comparison.
 snapshot nightly at 03:15 via launchd. Install instructions are in the file's
 header comment.
 
+Two things in that file are load-bearing and easy to "clean up" by mistake:
+
+- **Credentials come from `~/.config/recall/backup.env`, not the repo's
+  `.env`.** Putting `TURSO_*` in the repo would also silently retarget
+  `db:migrate`, `db:push` and `import:sheet` at production, because
+  `drizzle.config.ts` loads dotenv. Keeping the read-only token outside the
+  repo scopes it to the backup and leaves that trap disarmed. Create it with:
+
+  ```bash
+  mkdir -p ~/.config/recall && umask 077
+  printf 'TURSO_DATABASE_URL=%s\nTURSO_AUTH_TOKEN=%s\n' \
+    "$(turso db show recall --url)" \
+    "$(turso db tokens create recall --read-only --expiration 365d)" \
+    > ~/.config/recall/backup.env
+  ```
+
+- **`nvm use 20` is required.** A launchd login shell resolves Homebrew's node
+  (v25, `NODE_MODULE_VERSION` 141), while `better-sqlite3`'s native binding is
+  built against nvm's v20 (ABI 115). Without the pin the job connects to Turso
+  and *then* dies with "compiled against a different Node.js version" — it
+  fails loudly rather than silently, but it fails.
+
+Check it actually ran:
+
+```bash
+launchctl list | grep recall     # is it loaded
+tail -20 /tmp/recall-backup.log  # what happened last night
+ls -lt backups/                  # newest snapshot
+```
+
 Its limitation, stated plainly: it only fires while this Mac is awake, and the
 snapshots sit on the same disk as everything else. That covers "I broke the
 schema at 2am", which is the failure that has nearly happened. It does not

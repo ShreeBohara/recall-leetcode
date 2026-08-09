@@ -24,11 +24,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Matches the local toolchain. better-sqlite3 ships prebuilt binaries
           # per major Node version, so this is not a free choice — bumping it

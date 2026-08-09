@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Nightly verified snapshot of the deployed Recall database.
+
+  This is the zero-dependency scheduler: it needs no cloud account, and it runs
+  on the machine that already holds the Turso credentials. Its limitation is
+  honest and worth stating — it only fires while this Mac is awake, and the
+  snapshots land on the same disk as everything else. Copy backups/ to any
+  synced folder, or move to the cloud job in deploy/backup/README.md, to get a
+  copy that survives losing the laptop.
+
+  RunAtLoad catches the case where the machine was asleep at 03:15; launchd
+  fires a missed StartCalendarInterval once on wake, so a closed lid costs at
+  most one night rather than silently skipping forever.
+
+  Install:
+    cp deploy/backup/com.recall.backup.plist ~/Library/LaunchAgents/
+    # edit the two paths below if the repo does not live at ~/Desktop/...
+    launchctl load ~/Library/LaunchAgents/com.recall.backup.plist
+  Run once now:
+    launchctl start com.recall.backup
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.recall.backup.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.recall.backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <!-- Login shell so nvm's node is on PATH. Credentials come from the repo's
+         .env via dotenv, so no secret is stored in this file. -->
+    <string>cd "$HOME/Desktop/Leetcode_prepare/recall" &amp;&amp; npm run backup --silent</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>15</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/recall-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/recall-backup.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

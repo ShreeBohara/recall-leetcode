@@ -12,6 +12,8 @@
     "test:identity": "tsx scripts/identity-regression.ts",
     "test:fsrs": "tsx scripts/fsrs-regression.ts",
     "test:tz": "tsx scripts/weekly-report-tz-regression.ts",
+    "backup": "tsx scripts/backup.ts",
+    "backup:verify": "tsx scripts/backup.ts --verify-only",
     "seed:lists": "tsx scripts/seed-lists.ts",
     "import:sheet": "tsx scripts/import-sheet.ts",
     "db:generate": "drizzle-kit generate",

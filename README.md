@@ -10,7 +10,7 @@ dates onto your calendar.
 
 ```bash
 npm install
-npm run db:push        # create/update the schema
+npm run db:migrate     # create/update the schema from drizzle/
 npm run seed:lists     # one-time: seed the problem list and make it active
 npm run dev            # http://localhost:3000
 ```
@@ -18,11 +18,11 @@ npm run dev            # http://localhost:3000
 Skip `seed:lists` and there is no active list, so the recommender has nothing
 to draw from and "what should I solve next" stays empty.
 
-> **`db:push` follows your `.env`, not the filename above.** `drizzle.config.ts`
+> **These follow your `.env`, not the filename above.** `drizzle.config.ts`
 > loads dotenv, so if `TURSO_DATABASE_URL` is set (see
-> [Deploy](#deploy-vercel--turso)) then `db:push` and `import:sheet` target the
-> **deployed** database, not `data/recall.db`. Unset the `TURSO_*` vars for a
-> purely local run.
+> [Deploy](#deploy-vercel--turso)) then `db:migrate`, `db:push` and
+> `import:sheet` target the **deployed** database, not `data/recall.db`. Unset
+> the `TURSO_*` vars for a purely local run.
 
 `npm run import:sheet` is a one-time historical import from the original Google
 Sheet; it is not part of a normal setup.
@@ -182,9 +182,14 @@ After deploy:
 - A re-solve of an existing problem logs a review against the existing record —
   never a duplicate row. Identity resolves lcSlug → slug → number → exact bare
   slug, in one place (`findProblem` in `src/lib/data.ts`).
-- The schema is applied with `drizzle-kit push`; there is no `drizzle/`
-  migrations directory yet, so a destructive schema change has no reviewable
-  SQL and no rollback point. Snapshot the database before changing a column.
-- Roadmap: migration files (`db:generate` / `db:migrate`); concept-level
-  scheduling (the `concepts` / `problem_concepts` tables are declared and
-  waiting for it); sibling-problem substitution on mature cards.
+- Schema changes go through migration files: edit `src/db/schema.ts`, then
+  `npm run db:generate` to emit reviewable SQL into `drizzle/`, then
+  `npm run db:migrate` to apply it. `drizzle/0000_baseline.sql` is a baseline —
+  it describes the schema as it already existed when migrations were adopted,
+  and is recorded as applied, so it never re-runs against a live database.
+- `npm run db:push` still exists but is for throwaway/scratch databases only.
+  Against a database with real rows, push resolves a column rename or a new
+  `NOT NULL` column without a default by **recreating the table**, with no SQL
+  to review and nothing to roll back to. Use `db:generate` + `db:migrate`.
+- Roadmap: concept-level scheduling (the `concepts` / `problem_concepts` tables
+  are declared and waiting for it); sibling-problem substitution on mature cards.

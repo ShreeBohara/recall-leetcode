@@ -13,6 +13,8 @@
     "test:tz": "tsx scripts/weekly-report-tz-regression.ts",
     "seed:lists": "tsx scripts/seed-lists.ts",
     "import:sheet": "tsx scripts/import-sheet.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

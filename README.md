@@ -30,12 +30,29 @@ Sheet; it is not part of a normal setup.
 ## Tests
 
 ```bash
-npm test               # parser, identity ladder, and timezone regressions
+npm test               # parser, identity ladder, FSRS scheduler, timezone
 ```
 
 No test runner — each suite is a plain `tsx` script that exits non-zero on
 failure. The two DB-backed suites seed a scratch SQLite file in `os.tmpdir()`
-and never touch a real database.
+and never touch a real database. All four run in CI
+(`.github/workflows/ci.yml`) alongside lint, typecheck, `drizzle-kit check`
+and a production build.
+
+The suites exist because each one covers something that fails *silently*
+rather than loudly:
+
+| Suite | Guards against |
+|---|---|
+| `test:parser` | a misread log writing the wrong FSRS grade |
+| `test:identity` | the lcSlug → slug → number → bare-slug ladder drifting apart |
+| `test:fsrs` | the scheduler quietly returning the wrong next date |
+| `test:tz` | day-boundary math shifting when `TZ` is preset by the host |
+
+One thing `test:fsrs` documents rather than enforces: `maximum_interval: 365`
+is a *soft* cap. `LongTermScheduler.next_interval` clamps each grade and then
+enforces `again < hard < good < easy`, so a fully saturated card settles at
+365/366/367/368 days rather than 365. Harmless, but surprising if unexplained.
 
 ## Daily loop
 

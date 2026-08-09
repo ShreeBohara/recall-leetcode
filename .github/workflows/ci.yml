@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: this workflow only reads the repo. No token is handed to any
+# step that runs project code.
+permissions:
+  contents: read
+
+# A second push to the same branch cancels the first — nothing here is worth
+# queueing behind a run whose result is already stale. github.ref is used only
+# as a concurrency key, never interpolated into a shell command.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the local toolchain. better-sqlite3 ships prebuilt binaries
+          # per major Node version, so this is not a free choice — bumping it
+          # can force a slow source build.
+          node-version: '20'
+          cache: npm
+
+      # `npm ci` requires the lockfile to match package.json exactly. That is
+      # the point: it fails loudly on drift instead of silently reconciling.
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Four suites: parser (grade signals), identity (problem resolution),
+      # fsrs (the scheduling engine), tz (day-boundary math). test:tz runs
+      # drizzle-kit against a scratch SQLite file in the runner's tmpdir and
+      # blanks TURSO_* itself, so no database credentials are needed here.
+      - name: Tests
+        run: npm test
+
+      # Catches schema.ts being edited without a migration generated —
+      # validates the migration files against each other and the snapshot.
+      - name: Migrations are consistent
+        run: npx drizzle-kit check
+
+      - name: Build
+        run: npm run build
+        env:
+          # The build must never reach the real database. Leaving TURSO_* unset
+          # sends src/db/index.ts down the better-sqlite3 branch against a
+          # throwaway file, which is all a compile check needs.
+          DATABASE_PATH: /tmp/ci-build.db

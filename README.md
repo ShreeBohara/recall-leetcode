@@ -10,10 +10,32 @@ dates onto your calendar.
 
 ```bash
 npm install
-npm run db:push        # create/update the SQLite schema (data/recall.db)
-npm run import:sheet   # one-time: seed from the DSA Google Sheet history
+npm run db:push        # create/update the schema
+npm run seed:lists     # one-time: seed the problem list and make it active
 npm run dev            # http://localhost:3000
 ```
+
+Skip `seed:lists` and there is no active list, so the recommender has nothing
+to draw from and "what should I solve next" stays empty.
+
+> **`db:push` follows your `.env`, not the filename above.** `drizzle.config.ts`
+> loads dotenv, so if `TURSO_DATABASE_URL` is set (see
+> [Deploy](#deploy-vercel--turso)) then `db:push` and `import:sheet` target the
+> **deployed** database, not `data/recall.db`. Unset the `TURSO_*` vars for a
+> purely local run.
+
+`npm run import:sheet` is a one-time historical import from the original Google
+Sheet; it is not part of a normal setup.
+
+## Tests
+
+```bash
+npm test               # parser, identity ladder, and timezone regressions
+```
+
+No test runner — each suite is a plain `tsx` script that exits non-zero on
+failure. The two DB-backed suites seed a scratch SQLite file in `os.tmpdir()`
+and never touch a real database.
 
 ## Daily loop
 
@@ -60,9 +82,10 @@ anyway), or deploy first.
 
 ## MCP — let the tutoring chat log problems itself
 
-Recall is also an MCP server at `/api/mcp` (tools: `add_problem`,
-`get_due_reviews`, `log_review`, `get_stats`). With the dev server running,
-connect Claude Code:
+Recall is also an MCP server at `/api/mcp`. Tools: `get_next_action` (call it
+first — it returns the day's plan), `add_problem`, `get_due_reviews`,
+`log_review`, `get_stats`, `get_weekly_report_data`, `save_coach_report`. With
+the dev server running, connect Claude Code:
 
 ```bash
 claude mcp add --transport http recall http://localhost:3000/api/mcp --header "Authorization: Bearer dev"
@@ -84,14 +107,26 @@ and grade distribution. Sparse until you've logged a few weeks of reviews.
 
 ## Environment (.env)
 
-| Variable            | Default          | Purpose                                   |
-| ------------------- | ---------------- | ----------------------------------------- |
-| `DATABASE_PATH`     | `data/recall.db` | SQLite location                           |
-| `CALENDAR_TOKEN`    | `dev`            | Secret in the ICS feed URL                |
-| `ANTHROPIC_API_KEY` | —                | Enables AI parsing of free-form summaries |
-| `PARSE_MODEL`       | Haiku 4.5        | Model for AI parsing                      |
-| `MCP_TOKEN`         | `dev`            | Bearer token for the MCP endpoint         |
-| `RECALL_USER_ID`    | `shreet`         | Row owner (multi-user later)              |
+| Variable            | Default             | Purpose                                       |
+| ------------------- | ------------------- | --------------------------------------------- |
+| `DATABASE_PATH`     | `data/recall.db`    | SQLite location                               |
+| `CALENDAR_TOKEN`    | `dev` — see below   | Secret in the ICS feed URL                    |
+| `MCP_TOKEN`         | `dev` — see below   | Bearer token for the MCP endpoint             |
+| `ANTHROPIC_API_KEY` | —                   | Enables AI parsing of free-form summaries     |
+| `PARSE_MODEL`       | Haiku 4.5           | Model for AI parsing                          |
+| `RECALL_USER_ID`    | `shreet`            | Row owner (multi-user later)                  |
+| `APP_TIMEZONE`      | `America/Los_Angeles` | Timezone all day math uses (streaks, "due today") |
+| `APP_URL`           | Vercel URL, else localhost | Base URL the MCP tools put in their replies |
+
+> The `dev` fallback for `CALENDAR_TOKEN` and `MCP_TOKEN` is **local-only**. It
+> is revoked the moment `APP_PASSWORD` is set or `NODE_ENV=production`, because
+> those two routes are exempt from the login gate and a shared default would
+> leave them open. On a gated instance, set both explicitly or the ICS feed and
+> the MCP endpoint return "Not found" / 401. See `src/lib/secrets.ts`.
+>
+> Set `APP_TIMEZONE`, not `TZ`, to change the app's day boundary — `TZ` is
+> overwritten at startup (`src/db/index.ts`) because the deploy platform
+> presets it to UTC.
 
 ## Deploy (Vercel + Turso)
 
@@ -136,14 +171,20 @@ After deploy:
 
 ## Architecture notes
 
-- Next.js 16 App Router · Tailwind v4 + shadcn/ui (Base UI) · Drizzle +
-  better-sqlite3 · ts-fsrs (FSRS-6, long-term mode, retention 0.9, max
-  interval 365d, first interval floored at 2 days).
-- Every table carries `user_id` so multi-user (Supabase/Postgres + auth) is a
-  migration, not a rewrite.
-- A re-solve of an existing problem (same slug) logs a review against the
-  existing record — never a duplicate row.
-- Roadmap: concept-level scheduling (a fundamentals table that schedules the
-  *skill*, not just the problem); sibling-problem substitution on mature cards;
-  deployment (Vercel + Supabase) so the calendar feed and claude.ai connector
-  work from anywhere.
+- Next.js 16 App Router · Tailwind v4 + shadcn/ui (Base UI) · Drizzle over
+  Turso (libSQL) in deployment, better-sqlite3 locally · ts-fsrs (FSRS-6,
+  long-term mode, retention 0.9, max interval 365d, first interval floored at
+  2 days).
+- Every *user-owned* table carries `user_id`, so multi-user is a migration
+  rather than a rewrite. The three that don't are not user-scoped:
+  `list_items` (owned by its list), `problem_concepts` (a join table), and
+  `problems_catalog` (a shared cache of public LeetCode metadata).
+- A re-solve of an existing problem logs a review against the existing record —
+  never a duplicate row. Identity resolves lcSlug → slug → number → exact bare
+  slug, in one place (`findProblem` in `src/lib/data.ts`).
+- The schema is applied with `drizzle-kit push`; there is no `drizzle/`
+  migrations directory yet, so a destructive schema change has no reviewable
+  SQL and no rollback point. Snapshot the database before changing a column.
+- Roadmap: migration files (`db:generate` / `db:migrate`); concept-level
+  scheduling (the `concepts` / `problem_concepts` tables are declared and
+  waiting for it); sibling-problem substitution on mature cards.

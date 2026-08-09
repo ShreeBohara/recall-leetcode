@@ -1,17 +1,10 @@
 import { db } from "@/db";
-import {
-  problems,
-  reviews,
-  concepts,
-  problemConcepts,
-  listItems,
-} from "@/db/schema";
-import { and, asc, desc, eq, isNotNull, lte, or, sql } from "drizzle-orm";
+import { problems, reviews, listItems } from "@/db/schema";
+import { and, asc, desc, eq, isNotNull, lte, sql, type SQL } from "drizzle-orm";
 import { applyReview, cardToJson, deriveGrade } from "./fsrs";
 import { enrichFromCatalog } from "./catalog";
 import { lookupLc } from "./lc-lookup";
 import { computeStreaks } from "./records";
-import { patternDisplay } from "./patterns";
 import {
   slugFromTitle,
   safeJsonParse,
@@ -39,38 +32,74 @@ export interface SaveResult {
  * a RE-SOLVE: we log a review against the existing record and advance its FSRS
  * card — never a duplicate row.
  */
-/** Upsert canonical concepts, link them to the problem, and claim list items. */
-async function syncConceptsAndLists(
+/**
+ * Point the problem's list entry at it, so list progress reflects the solve.
+ *
+ * This used to also mirror every pattern into `concepts` / `problem_concepts`
+ * — 2-3 sequential round trips per pattern, at the tail of an untransacted
+ * write, for two tables no query in the app ever reads. Removed. The tables
+ * themselves stay declared in src/db/schema.ts on purpose: dropping them from
+ * the schema would make the next `drizzle-kit push` emit DROP TABLE against
+ * production, and they are the seed of the planned concept-level scheduling.
+ */
+async function claimListItems(
   problemId: number,
-  patterns: string[],
   lcSlug: string | null
 ): Promise<void> {
-  for (const slug of patterns) {
-    let concept = await db
+  if (!lcSlug) return;
+  await db
+    .update(listItems)
+    .set({ problemId })
+    .where(eq(listItems.lcSlug, lcSlug))
+    .run();
+}
+
+export interface ProblemKeys {
+  lcSlug?: string | null;
+  slug?: string | null;
+  number?: number | null;
+  bareSlug?: string | null;
+  /** Case-insensitive exact title. Only the MCP resolver uses this rung. */
+  title?: string | null;
+}
+
+/**
+ * THE identity ladder, strongest key first: lcSlug → slug → number → exact
+ * bare slug (→ title, for MCP refs only). Both the save path and the MCP
+ * resolver go through this; they used to disagree, so `log_review` rejected
+ * the LeetCode slug its own tool schema advertises.
+ *
+ * A slug miss is NOT a new problem: the same problem re-logged without its
+ * number (or vice versa) must reach the merge path, or it duplicates with a
+ * cold FSRS card. The bare-slug rung is exact equality, never a LIKE, so
+ * "climbing-stairs" can't grab "min-cost-climbing-stairs".
+ */
+export async function findProblem(
+  keys: ProblemKeys
+): Promise<ProblemRow | undefined> {
+  const byKey = (extra: SQL) =>
+    db
       .select()
-      .from(concepts)
-      .where(and(eq(concepts.userId, USER_ID), eq(concepts.slug, slug)))
+      .from(problems)
+      .where(and(eq(problems.userId, USER_ID), extra))
       .get();
-    if (!concept) {
-      concept = await db
-        .insert(concepts)
-        .values({ userId: USER_ID, slug, display: patternDisplay(slug) })
-        .returning()
-        .get();
-    }
-    await db
-      .insert(problemConcepts)
-      .values({ problemId, conceptId: concept.id })
-      .onConflictDoNothing()
-      .run();
+
+  const rungs: (SQL | null)[] = [
+    keys.lcSlug ? eq(problems.lcSlug, keys.lcSlug) : null,
+    keys.slug ? eq(problems.slug, keys.slug) : null,
+    keys.number != null ? eq(problems.number, keys.number) : null,
+    keys.bareSlug
+      ? sql`(${problems.slug} = ${keys.bareSlug} OR ${problems.slug} = cast(${problems.number} as text) || '-' || ${keys.bareSlug})`
+      : null,
+    keys.title ? sql`lower(${problems.title}) = lower(${keys.title})` : null,
+  ];
+
+  for (const rung of rungs) {
+    if (!rung) continue;
+    const hit = await byKey(rung);
+    if (hit) return hit;
   }
-  if (lcSlug) {
-    await db
-      .update(listItems)
-      .set({ problemId })
-      .where(eq(listItems.lcSlug, lcSlug))
-      .run();
-  }
+  return undefined;
 }
 
 export async function saveParsedSummary(
@@ -104,54 +133,14 @@ export async function saveParsedSummary(
   const now = solvedAt.toISOString();
   const { grade, source } = deriveGrade(parsed);
 
-  // Identity resolution, strongest key first — a slug miss ≠ new problem.
-  // The same problem re-logged without its number (or vice versa) must hit
-  // the merge path, or we'd duplicate it with a cold FSRS card; and the
-  // fallback must never grab a DIFFERENT problem whose title merely ends the
-  // same way ("Climbing Stairs" vs "Min Cost Climbing Stairs").
-  let existing = lcSlug
-    ? await db
-        .select()
-        .from(problems)
-        .where(and(eq(problems.userId, USER_ID), eq(problems.lcSlug, lcSlug)))
-        .get()
-    : undefined;
-  if (!existing) {
-    existing = await db
-      .select()
-      .from(problems)
-      .where(and(eq(problems.userId, USER_ID), eq(problems.slug, slug)))
-      .get();
-  }
-  if (!existing && parsed.number != null) {
-    existing = await db
-      .select()
-      .from(problems)
-      .where(
-        and(eq(problems.userId, USER_ID), eq(problems.number, parsed.number))
-      )
-      .get();
-  }
-  if (!existing) {
-    const bare = slugFromTitle(parsed.title, null);
-    if (bare) {
-      // Exact bare slug, or exactly the row's own `${number}-${bare}` —
-      // never a loose suffix match.
-      existing = await db
-        .select()
-        .from(problems)
-        .where(
-          and(
-            eq(problems.userId, USER_ID),
-            or(
-              eq(problems.slug, bare),
-              sql`${problems.slug} = cast(${problems.number} as text) || '-' || ${bare}`
-            )
-          )
-        )
-        .get();
-    }
-  }
+  // No title rung here on purpose: a save must not merge into a different
+  // problem that happens to share a title.
+  const existing = await findProblem({
+    lcSlug,
+    slug,
+    number: parsed.number,
+    bareSlug: slugFromTitle(parsed.title, null),
+  });
 
   let problemId: number;
   let cardJson: string | null = null;
@@ -254,7 +243,7 @@ export async function saveParsedSummary(
     })
     .run();
 
-  await syncConceptsAndLists(problemId, parsed.patterns, lcSlug);
+  await claimListItems(problemId, lcSlug);
 
   return { problemId, isNew: !existing, grade, gradeSource: source, nextDue: due };
 }
@@ -276,6 +265,16 @@ export async function logReview(input: LogReviewInput, when: Date = new Date()) 
     .where(and(eq(problems.id, input.problemId), eq(problems.userId, USER_ID)))
     .get();
   if (!problem) throw new Error(`Problem ${input.problemId} not found`);
+  // A retired problem (revise = no) has due = null by design, and every read
+  // path filters it out. Writing a due date here produced a schedule nothing
+  // would ever surface — and a problem page that said "Not scheduled for
+  // review" directly above "rescheduled Aug 14". Refuse instead of silently
+  // re-enrolling something the user deliberately stopped reviewing.
+  if (!problem.revise) {
+    throw new Error(
+      `"${problem.title}" is retired from review — turn Revise back on for it before logging a review.`
+    );
+  }
 
   const scheduled = applyReview(problem.fsrsCard, input.grade, when);
   const cardJson = cardToJson(scheduled.card);
@@ -346,38 +345,21 @@ export async function getAllProblems(): Promise<ProblemRow[]> {
 
 /**
  * Resolve a problem reference from an MCP tool call: LeetCode number,
- * slug, or (case-insensitive) title.
+ * LeetCode slug, stored slug, or (case-insensitive) exact title — the four
+ * forms the log_review tool schema advertises. Shares the ladder with the
+ * save path so the two doors can't drift again.
  */
 export async function resolveProblem(
   ref: string | number
 ): Promise<ProblemRow | undefined> {
-  if (typeof ref === "number" || /^\d+$/.test(String(ref).trim())) {
-    const byNumber = await db
-      .select()
-      .from(problems)
-      .where(
-        and(eq(problems.userId, USER_ID), eq(problems.number, Number(ref)))
-      )
-      .get();
-    if (byNumber) return byNumber;
-  }
   const text = String(ref).trim();
-  const bySlug = await db
-    .select()
-    .from(problems)
-    .where(and(eq(problems.userId, USER_ID), eq(problems.slug, text)))
-    .get();
-  if (bySlug) return bySlug;
-  return db
-    .select()
-    .from(problems)
-    .where(
-      and(
-        eq(problems.userId, USER_ID),
-        sql`lower(${problems.title}) = lower(${text})`
-      )
-    )
-    .get();
+  return findProblem({
+    lcSlug: text,
+    slug: text,
+    number: /^\d+$/.test(text) ? Number(text) : null,
+    bareSlug: slugFromTitle(text, null) || text,
+    title: text,
+  });
 }
 
 export interface ReviewSummary {
@@ -686,8 +668,12 @@ export async function getTodayStats(): Promise<TodayStats> {
     }
   }
 
+  // 14 days, because that is the longest horizon anything renders: the chart
+  // slices to 14 (src/components/forecast-chart.tsx) and the stat spark to 7.
+  // The other 16 days used to be computed — each a full scan of `scheduled` —
+  // then serialized into the page payload and dropped.
   const forecast: TodayStats["forecast"] = [];
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 14; i++) {
     const day = new Date(startToday);
     day.setDate(day.getDate() + i);
     const key = localDayKey(day);

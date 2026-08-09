@@ -7,6 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "npm run test:parser && npm run test:identity && npm run test:tz",
+    "test:parser": "tsx scripts/parser-regression.ts",
+    "test:identity": "tsx scripts/identity-regression.ts",
+    "test:tz": "tsx scripts/weekly-report-tz-regression.ts",
+    "seed:lists": "tsx scripts/seed-lists.ts",
     "import:sheet": "tsx scripts/import-sheet.ts",
     "db:push": "drizzle-kit push"
   },

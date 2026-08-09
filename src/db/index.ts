@@ -6,7 +6,11 @@ import type { LibSQLDatabase } from "drizzle-orm/libsql";
 // All day-boundary math (streaks, "due today", forecast buckets) uses the
 // process timezone; pin it so the deployed UTC server counts days the way the
 // user does. This module loads before any date math runs.
-process.env.TZ ??= process.env.APP_TIMEZONE ?? "America/Los_Angeles";
+//
+// Assigned unconditionally, NOT with `??=`: AWS Lambda (the runtime behind
+// Vercel's Node functions) pre-sets TZ, so `??=` skipped the pin on exactly
+// the deployment it was written for. Override with APP_TIMEZONE, not TZ.
+process.env.TZ = process.env.APP_TIMEZONE ?? "America/Los_Angeles";
 
 /**
  * One schema, two drivers:
@@ -17,6 +21,14 @@ process.env.TZ ??= process.env.APP_TIMEZONE ?? "America/Los_Angeles";
  */
 export type Db = LibSQLDatabase<typeof schema>;
 
+/*
+ * require(), not import(): the driver is chosen at runtime and `db` is a
+ * module-scope const, so this has to stay synchronous — a top-level `import`
+ * would load BOTH drivers (pulling better-sqlite3's native binding into every
+ * serverless bundle), and `await import()` would make createDb async and
+ * ripple through every caller. The rule is disabled here and nowhere else.
+ */
+/* eslint-disable @typescript-eslint/no-require-imports */
 function createDb(): Db {
   const tursoUrl = process.env.TURSO_DATABASE_URL;
   if (tursoUrl) {
@@ -43,6 +55,7 @@ function createDb(): Db {
   sqlite.pragma("foreign_keys = ON");
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 // Survive Next.js dev-server hot reloads without leaking connections.
 const globalForDb = globalThis as unknown as { _recallDb?: Db };

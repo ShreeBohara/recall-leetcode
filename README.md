@@ -292,6 +292,10 @@ After deploy:
 - Roadmap: concept-level scheduling (the `concepts` / `problem_concepts` tables
   are declared and waiting for it); sibling-problem substitution on mature cards.
 
+## License
+
+[MIT](LICENSE) © Shree Bohara
+
 ---
 
 <p align="center"><sub>

@@ -1,10 +1,79 @@
-# Recall
+<h1 align="center">Recall</h1>
 
-A memory engine for your LeetCode practice. Paste the Problem Log summary from
-your Claude tutoring session; Recall parses it, derives a review grade from how
-the solve actually went, schedules spaced-repetition reviews with
-[FSRS](https://github.com/open-spaced-repetition/ts-fsrs), and mirrors due
-dates onto your calendar.
+<p align="center">
+  <strong>A memory engine for LeetCode practice.</strong><br>
+  Most people re-solve problems they already know and never revisit the ones
+  that actually broke them. Recall fixes that by scheduling reviews from
+  <em>how the solve really went</em> — not from how you felt about it afterwards.
+</p>
+
+<p align="center">
+  <a href="https://github.com/ShreeBohara/recall-leetcode/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/ShreeBohara/recall-leetcode/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <img alt="Next.js 16" src="https://img.shields.io/badge/Next.js-16-black?logo=next.js">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white">
+  <img alt="Drizzle + Turso" src="https://img.shields.io/badge/Drizzle-Turso%20%2F%20SQLite-C5F74F">
+  <img alt="FSRS-6" src="https://img.shields.io/badge/scheduler-FSRS--6-f0b429">
+</p>
+
+![Recall dashboard — due reviews, streak, forecast and weakest areas](docs/screenshots/dashboard.png)
+
+## The idea
+
+A flashcard app asks *"did you remember this?"* and takes your word for it.
+That question is useless for algorithms, because the thing you need to recall
+isn't a fact — it's **the approach**: which pattern applies, why it works, and
+what it costs.
+
+So Recall does two things differently.
+
+**The grade is derived, not self-reported.** You finish a tutoring session and
+paste (or auto-log) a summary of what happened: hints used, how fast the
+approach came, confidence before and after, what went wrong. Recall turns those
+signals into an [FSRS](https://github.com/open-spaced-repetition/ts-fsrs) grade
+itself. You never rate your own memory, because people are bad at it — and the
+calibration chart exists to prove exactly how bad.
+
+**A review is a recall, not a re-read.** The answer ships hidden. You say the
+pattern, the invariant and the complexity out loud first, *then* reveal. The
+recommender is built around the same rule: when it suggests your next problem it
+deliberately withholds the pattern, because recognising it is the skill being
+trained.
+
+<p align="center">
+  <img alt="The review player with the answer still hidden" src="docs/screenshots/review.png" width="820">
+</p>
+
+## The loop
+
+1. Solve a problem with your Claude tutor. The session ends with a Problem Log.
+2. **Log it** — paste it, or let Claude call the MCP tool directly. ~15 seconds.
+3. Each morning **Today** shows what's due. Two minutes per card: name the
+   pattern, state the invariant, give the complexity, reveal, grade honestly.
+
+Due dates also mirror onto your calendar, so the queue finds you even when you
+don't open the app.
+
+## Under the hood
+
+The parts worth reading, if you're here to look at the code:
+
+| | |
+|---|---|
+| **Grade derivation** | [`src/lib/fsrs.ts`](src/lib/fsrs.ts) — maps solve signals to an FSRS rating; the tutor's suggested grade wins when present, otherwise it's inferred |
+| **Answer-hiding as an invariant** | [`src/lib/recommend.ts`](src/lib/recommend.ts) — `NextAction.solve` carries *no* pattern fields, because it crosses into a client component |
+| **Two doors, one funnel** | [`src/app/api/mcp/route.ts`](src/app/api/mcp/route.ts) and the paste form both call the same `saveParsedSummary`, so the MCP tool and the web UI can't drift into two different write paths |
+| **One schema, two drivers** | [`src/db/index.ts`](src/db/index.ts) — libSQL over HTTP when deployed, better-sqlite3 locally, chosen at runtime |
+| **Day math is the product** | `TZ` is pinned at startup and every boundary goes through one helper; a streak that silently shifts by a day is a broken app |
+| **Verified backups** | [`scripts/backup.ts`](scripts/backup.ts) — rebuilds a real SQLite file, then reopens it and proves it before calling it a backup |
+
+![Insights — activity heatmap, calibration, pattern mastery and review outcomes](docs/screenshots/insights.png)
+
+The calibration chart is the honest one. Grey is perfect calibration, amber is
+your actual recall rate at each confidence level. Amber sitting below grey at
+4/5 and 5/5 means you're overconfident — which is the failure mode that makes
+people skip the reviews they most need.
 
 ## Run it
 
@@ -14,6 +83,8 @@ npm run db:migrate     # create/update the schema from drizzle/
 npm run seed:lists     # one-time: seed the problem list and make it active
 npm run dev            # http://localhost:3000
 ```
+
+Works immediately on local SQLite with no accounts and no cloud setup.
 
 Skip `seed:lists` and there is no active list, so the recommender has nothing
 to draw from and "what should I solve next" stays empty.
@@ -34,13 +105,13 @@ npm test               # parser, identity ladder, FSRS scheduler, timezone
 ```
 
 No test runner — each suite is a plain `tsx` script that exits non-zero on
-failure. The two DB-backed suites seed a scratch SQLite file in `os.tmpdir()`
-and never touch a real database. All four run in CI
+failure. The DB-backed suites seed a scratch SQLite file in `os.tmpdir()` and
+never touch a real database. All four run in CI
 (`.github/workflows/ci.yml`) alongside lint, typecheck, `drizzle-kit check`
 and a production build.
 
-The suites exist because each one covers something that fails *silently*
-rather than loudly:
+Each suite covers something that fails *silently* rather than loudly — the
+only kind of bug that survives in a single-user app:
 
 | Suite | Guards against |
 |---|---|
@@ -53,15 +124,6 @@ One thing `test:fsrs` documents rather than enforces: `maximum_interval: 365`
 is a *soft* cap. `LongTermScheduler.next_interval` clamps each grade and then
 enforces `again < hard < good < easy`, so a fully saturated card settles at
 365/366/367/368 days rather than 365. Harmless, but surprising if unexplained.
-
-## Daily loop
-
-1. Solve a problem with your Claude tutor (the tutor Skill ends the session
-   with a Problem Log summary).
-2. **Log** → paste → Parse → confirm → Save. (~15 seconds)
-3. Each morning, **Today** shows what's due. Each review is a 2-minute
-   approach recall: name the pattern, state the invariant, give the
-   complexity — then reveal and grade yourself honestly.
 
 ## The Problem Log template
 
@@ -87,16 +149,6 @@ Grades: `again` (couldn't do it) · `hard` (hints/slow/low confidence) ·
 `good` (solo with friction) · `easy` (instant + optimal). The tutor's
 suggested grade wins; otherwise Recall derives it from the signals.
 
-## Calendar
-
-Subscribe once in Google Calendar: **Other calendars → From URL** →
-`http://<host>:3000/api/calendar/dev.ics` (set `CALENDAR_TOKEN` to change the
-secret). Overdue reviews appear on today. Note: Google only refreshes
-subscribed feeds every 12–24h, which is fine for multi-day intervals; Apple
-Calendar refreshes faster. While the app only runs on localhost the feed can't
-be reached by Google's servers — use the in-app Today queue as primary (it is
-anyway), or deploy first.
-
 ## MCP — let the tutoring chat log problems itself
 
 Recall is also an MCP server at `/api/mcp`. Tools: `get_next_action` (call it
@@ -113,14 +165,43 @@ say **"log it"** — Claude calls `add_problem` directly, zero copy-paste. For
 claude.ai custom connectors the endpoint must be publicly reachable, i.e.
 after deployment.
 
+`get_next_action` omits the recommended problem's pattern from its reply on
+purpose: tool results are visible to the user in most MCP clients, and the
+pattern is the answer.
+
 The tutor prompt in [docs/tutor-prompt.md](docs/tutor-prompt.md) is written to
 use these tools when available and fall back to the paste template otherwise.
 
-## Insights
+## Library and calendar
 
-`/insights` — activity heatmap, felt-vs-actual calibration (fed by the review
-player's pre-reveal confidence slider), confidence trend, per-pattern mastery,
-and grade distribution. Sparse until you've logged a few weeks of reviews.
+![The problem library with full review history per problem](docs/screenshots/library.png)
+
+Every problem keeps its approaches, key insight and full review journal. The
+detail page reuses the review player's reveal, so browsing your own notes
+doesn't spoil a problem still sitting in the queue.
+
+For the calendar, subscribe once in Google Calendar: **Other calendars → From
+URL** → `http://<host>:3000/api/calendar/dev.ics` (set `CALENDAR_TOKEN` to
+change the secret). Overdue reviews appear on today. Google only refreshes
+subscribed feeds every 12–24h, which is fine for multi-day intervals; Apple
+Calendar refreshes faster. While the app only runs on localhost the feed can't
+be reached by Google's servers — use the in-app Today queue as primary (it is
+anyway), or deploy first.
+
+## Backups
+
+```bash
+npm run backup                          # verified snapshot
+npm run backup:verify backups/<file>.db # re-verify an existing one
+```
+
+A snapshot is only a backup if it opens and makes sense, so the script reopens
+what it wrote and checks integrity, foreign keys, exact row counts, and the
+domain invariants that decide whether the data is actually restorable. Anything
+that fails is renamed `*.FAILED.db` rather than kept — a backup that looks like
+protection but isn't is worse than none. See
+[`deploy/backup/README.md`](deploy/backup/README.md) for scheduling and the
+restore drill.
 
 ## Environment (.env)
 
@@ -210,3 +291,10 @@ After deploy:
   to review and nothing to roll back to. Use `db:generate` + `db:migrate`.
 - Roadmap: concept-level scheduling (the `concepts` / `problem_concepts` tables
   are declared and waiting for it); sibling-problem substitution on mature cards.
+
+---
+
+<p align="center"><sub>
+Screenshots use a generated sample history so the charts are legible.
+Built as a personal tool — the design decisions assume one user who is honest with themselves.
+</sub></p>

@@ -17,6 +17,12 @@
   <img alt="FSRS-6" src="https://img.shields.io/badge/scheduler-FSRS--6-f0b429">
 </p>
 
+<p align="center">
+  <a href="https://recall-shrees-projects-a339427d.vercel.app"><strong>Live instance</strong></a>
+  — passphrase-gated, since it holds one person's real practice history.
+  The screenshots below are the actual app.
+</p>
+
 ![Recall dashboard — due reviews, streak, forecast and weakest areas](docs/screenshots/dashboard.png)
 
 ## The idea

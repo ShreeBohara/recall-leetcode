@@ -41,6 +41,32 @@ signals into an [FSRS](https://github.com/open-spaced-repetition/ts-fsrs) grade
 itself. You never rate your own memory, because people are bad at it — and the
 calibration chart exists to prove exactly how bad.
 
+```mermaid
+flowchart LR
+    sig["<b>What happened in the session</b><br/>hints used &middot; recall speed<br/>confidence before / after<br/>mistakes made"]
+    tutor{"did the tutor<br/>suggest a grade?"}
+    use["<b>use it</b><br/>auditable, a human judged it"]
+    derive["<b>deriveGrade()</b><br/>infer from the signals"]
+    grade(["<b>again</b> &middot; <b>hard</b> &middot; <b>good</b> &middot; <b>easy</b>"])
+    fsrs["<b>applyReview()</b><br/>updates the FSRS-6 card:<br/>stability &middot; difficulty &middot; reps"]
+    due(["<b>next due date</b>"])
+    out["Today queue &middot; calendar feed<br/>14-day forecast &middot; catch-up plan"]
+
+    sig --> tutor
+    tutor -- "yes" --> use
+    tutor -- "no" --> derive
+    use --> grade
+    derive --> grade
+    grade --> fsrs --> due --> out
+
+    classDef sigcls  fill:#3b4a63,stroke:#232c40,color:#ffffff
+    classDef gradecls fill:#f0b429,stroke:#a8761c,color:#161616
+    classDef fsrscls fill:#2f6f4f,stroke:#1d4733,color:#ffffff
+    class sig sigcls
+    class grade,due gradecls
+    class fsrs fsrscls
+```
+
 **A review is a recall, not a re-read.** The answer ships hidden. You say the
 pattern, the invariant and the complexity out loud first, *then* reveal. The
 recommender is built around the same rule: when it suggests your next problem it
@@ -61,25 +87,122 @@ trained.
 Due dates also mirror onto your calendar, so the queue finds you even when you
 don't open the app.
 
-## Under the hood
+## Architecture
 
-The parts worth reading, if you're here to look at the code:
+Three ways in, one way to write, one scheduler. Bold arrows mutate; dotted
+arrows only read.
+
+```mermaid
+flowchart LR
+    chat["Claude<br/>tutoring session"]
+    browser["Browser"]
+    calapp["Calendar app"]
+
+    subgraph edge["Next.js 16 &mdash; every request passes src/proxy.ts"]
+        direction TB
+        mcp["<b>/api/mcp</b><br/>7 tools &middot; bearer token"]
+        pages["<b>Today &middot; Review</b><br/><b>Library &middot; Insights</b><br/>server components"]
+        rest["<b>/api/problems</b><br/><b>/api/reviews</b>"]
+        ics["<b>/api/calendar/….ics</b><br/>token in URL"]
+    end
+
+    subgraph core["src/lib &mdash; the only two functions that write"]
+        direction TB
+        save["<b>saveParsedSummary()</b><br/>new solve or re-solve"]
+        logr["<b>logReview()</b><br/>a graded review"]
+        sched["<b>applyReview()</b><br/>ts-fsrs &middot; FSRS-6"]
+    end
+
+    db[("<b>Drizzle ORM</b><br/>Turso libSQL deployed<br/>better-sqlite3 local")]
+
+    chat --> mcp
+    browser --> pages
+    calapp --> ics
+    pages --> rest
+
+    mcp ==> save
+    mcp ==> logr
+    rest ==> save
+    rest ==> logr
+    save ==> sched
+    logr ==> sched
+    sched ==> db
+
+    pages -.-> db
+    ics -.-> db
+    mcp -.-> db
+
+    classDef client fill:#f0b429,stroke:#a8761c,color:#161616
+    classDef writer fill:#2f6f4f,stroke:#1d4733,color:#ffffff
+    classDef store  fill:#3b4a63,stroke:#232c40,color:#ffffff
+    class chat,browser,calapp client
+    class save,logr,sched writer
+    class db store
+```
+
+**Built with** Next.js 16 App Router · React 19 · TypeScript (strict) ·
+Tailwind v4 + shadcn/ui on Base UI · Drizzle ORM · ts-fsrs (FSRS-6, long-term
+mode, retention 0.9, max interval 365d, first interval floored at 2 days).
+
+The shape worth noticing: **exactly two functions in the whole codebase write
+to the database** — `saveParsedSummary()` for a solve, `logReview()` for a
+graded review — and both reach the scheduler through the same `applyReview()`.
+The MCP tool and the web form are two doors into one funnel, so logging from a
+Claude session and logging from the browser cannot drift into producing
+different rows.
+
+### Where things live
+
+```
+src/
+  proxy.ts              passphrase gate; MCP + .ics carry their own tokens
+  app/
+    page.tsx            Today — due queue, streak, forecast
+    review/             the answer-hidden review player
+    log/  library/  insights/
+    api/
+      mcp/              MCP server, 7 tools (+ /[token] for claude.ai)
+      calendar/[token]/ dynamic .ics feed
+      problems/  reviews/  parse/  settings/  backlog/
+  lib/
+    data.ts             every query + the two write paths
+    fsrs.ts             grade rubric and FSRS scheduling
+    recommend.ts        what to solve next (pattern-blind on purpose)
+    parser.ts           Problem Log → structured summary
+    patterns.ts         canonical pattern vocabulary + aliases
+    records.ts          streaks, freezes, personal records
+    coach.ts            weekly report data
+  db/
+    schema.ts           9 tables, Drizzle
+    index.ts            runtime driver choice
+drizzle/                migration files (0000_baseline.sql onward)
+scripts/                4 test suites, backup, seeding, plan builder
+```
+
+### Decisions worth reading
 
 | | |
 |---|---|
-| **Grade derivation** | [`src/lib/fsrs.ts`](src/lib/fsrs.ts) — maps solve signals to an FSRS rating; the tutor's suggested grade wins when present, otherwise it's inferred |
-| **Answer-hiding as an invariant** | [`src/lib/recommend.ts`](src/lib/recommend.ts) — `NextAction.solve` carries *no* pattern fields, because it crosses into a client component |
-| **Two doors, one funnel** | [`src/app/api/mcp/route.ts`](src/app/api/mcp/route.ts) and the paste form both call the same `saveParsedSummary`, so the MCP tool and the web UI can't drift into two different write paths |
+| **The grade is evidence, not a vote** | [`src/lib/fsrs.ts`](src/lib/fsrs.ts) — `deriveGrade()` maps solve signals to an FSRS rating; a tutor's explicit grade wins, otherwise it's inferred |
+| **Answer-hiding as a type** | [`src/lib/recommend.ts`](src/lib/recommend.ts) — `NextAction.solve` has *no* pattern fields, because that object crosses into a client component |
+| **Two doors, one funnel** | [`src/app/api/mcp/route.ts`](src/app/api/mcp/route.ts) and the paste form both call the same `saveParsedSummary` |
 | **One schema, two drivers** | [`src/db/index.ts`](src/db/index.ts) — libSQL over HTTP when deployed, better-sqlite3 locally, chosen at runtime |
-| **Day math is the product** | `TZ` is pinned at startup and every boundary goes through one helper; a streak that silently shifts by a day is a broken app |
-| **Verified backups** | [`scripts/backup.ts`](scripts/backup.ts) — rebuilds a real SQLite file, then reopens it and proves it before calling it a backup |
+| **Day math is the product** | `TZ` is assigned unconditionally at startup; a streak that silently shifts by a day is a broken app |
+| **A backup that proves itself** | [`scripts/backup.ts`](scripts/backup.ts) — rebuilds a real SQLite file, reopens it, and checks domain invariants before calling it a backup |
+
+## Insights
 
 ![Insights — activity heatmap, calibration, pattern mastery and review outcomes](docs/screenshots/insights.png)
 
-The calibration chart is the honest one. Grey is perfect calibration, amber is
-your actual recall rate at each confidence level. Amber sitting below grey at
-4/5 and 5/5 means you're overconfident — which is the failure mode that makes
-people skip the reviews they most need.
+The calibration chart is the one that earns the design. Grey is perfect
+calibration; amber is your actual recall rate at each confidence level. Amber
+sitting below grey at 4/5 and 5/5 means you are overconfident — which is
+exactly the failure mode that makes people skip the reviews they most need,
+and the reason Recall never asks you to grade your own memory.
+
+Alongside it: an activity heatmap, confidence over time, per-pattern mastery
+weighted toward recent grades, and the spread of review outcomes. Sparse until
+a few weeks of reviews have accumulated.
 
 ## Run it
 
@@ -273,12 +396,8 @@ After deploy:
   deployed app as the source of truth; for cloud-backed local dev, put the
   `TURSO_*` values in `.env`.
 
-## Architecture notes
+## Data and schema notes
 
-- Next.js 16 App Router · Tailwind v4 + shadcn/ui (Base UI) · Drizzle over
-  Turso (libSQL) in deployment, better-sqlite3 locally · ts-fsrs (FSRS-6,
-  long-term mode, retention 0.9, max interval 365d, first interval floored at
-  2 days).
 - Every *user-owned* table carries `user_id`, so multi-user is a migration
   rather than a rewrite. The three that don't are not user-scoped:
   `list_items` (owned by its list), `problem_concepts` (a join table), and
